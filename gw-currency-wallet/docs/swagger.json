@@ -1,0 +1,417 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "gw-currency-wallet API",
+    "version": "1.0.0",
+    "description": "Кошелёк-обменник: регистрация и авторизация по JWT, баланс в USD/RUB/EUR, пополнение, вывод средств и обмен валют. Курсы валют получаются по gRPC у сервиса exchanger и кэшируются на короткое время."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Локальный запуск (./main -c config.env)"
+    }
+  ],
+  "tags": [
+    { "name": "auth", "description": "Регистрация и авторизация" },
+    { "name": "wallet", "description": "Баланс и операции по счёту" },
+    { "name": "exchange", "description": "Курсы валют и обмен" }
+  ],
+  "paths": {
+    "/api/v1/register": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Регистрация пользователя",
+        "operationId": "register",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RegisterRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Пользователь зарегистрирован",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessageResponse" },
+                "example": { "message": "User registered successfully" }
+              }
+            }
+          },
+          "400": {
+            "description": "Имя или email уже заняты, либо некорректные данные",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "Username or email already exists" }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/login": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Авторизация пользователя",
+        "operationId": "login",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JWT-токен",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TokenResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Неверный логин или пароль",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "Invalid username or password" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/balance": {
+      "get": {
+        "tags": ["wallet"],
+        "summary": "Баланс пользователя",
+        "operationId": "getBalance",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Баланс по всем валютам",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BalanceResponse" },
+                "example": { "balance": { "USD": 100, "RUB": 0, "EUR": 0 } }
+              }
+            }
+          },
+          "401": {
+            "description": "Токен отсутствует или недействителен",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/wallet/deposit": {
+      "post": {
+        "tags": ["wallet"],
+        "summary": "Пополнение счёта",
+        "operationId": "deposit",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AmountRequest" },
+              "example": { "amount": 100.0, "currency": "USD" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Счёт пополнен",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReplenishResponse" },
+                "example": {
+                  "message": "Account topped up successfully",
+                  "new_balance": { "USD": 100, "RUB": 0, "EUR": 0 }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Некорректная сумма или валюта",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "Invalid amount or currency" }
+              }
+            }
+          },
+          "401": {
+            "description": "Токен отсутствует или недействителен",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/wallet/withdraw": {
+      "post": {
+        "tags": ["wallet"],
+        "summary": "Вывод средств",
+        "operationId": "withdraw",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AmountRequest" },
+              "example": { "amount": 50.0, "currency": "USD" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Средства выведены",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReplenishResponse" },
+                "example": {
+                  "message": "Withdrawal successful",
+                  "new_balance": { "USD": 50, "RUB": 0, "EUR": 0 }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Недостаточно средств или некорректная сумма",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "Insufficient funds or invalid amount" }
+              }
+            }
+          },
+          "401": {
+            "description": "Токен отсутствует или недействителен",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exchange/rates": {
+      "get": {
+        "tags": ["exchange"],
+        "summary": "Курсы валют",
+        "description": "Курсы отдаёт сервис exchanger (gRPC). Значение — сколько рублей стоит одна единица валюты.",
+        "operationId": "getRates",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Курсы валют",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RatesResponse" },
+                "example": { "rates": { "USD": 90, "RUB": 1, "EUR": 100 } }
+              }
+            }
+          },
+          "401": {
+            "description": "Токен отсутствует или недействителен",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "500": {
+            "description": "Не удалось получить курсы",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "Failed to retrieve exchange rates" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exchange": {
+      "post": {
+        "tags": ["exchange"],
+        "summary": "Обмен валют",
+        "operationId": "exchange",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ExchangeRequest" },
+              "example": { "from_currency": "USD", "to_currency": "EUR", "amount": 100.0 }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Обмен выполнен",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ExchangeResponse" },
+                "example": {
+                  "message": "Exchange successful",
+                  "exchanged_amount": 90,
+                  "new_balance": { "USD": 0, "RUB": 0, "EUR": 90 }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Недостаточно средств или некорректные валюты",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "Insufficient funds or invalid currencies" }
+              }
+            }
+          },
+          "401": {
+            "description": "Токен отсутствует или недействителен",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "500": {
+            "description": "Не удалось получить курсы",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["wallet"],
+        "summary": "Проба живости",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Сервис работает",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "status": { "type": "string" } } },
+                "example": { "status": "ok" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" } }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": ["username", "password", "email"],
+        "properties": {
+          "username": { "type": "string", "minLength": 3, "maxLength": 32 },
+          "password": { "type": "string", "minLength": 6, "format": "password" },
+          "email": { "type": "string", "format": "email" }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string" },
+          "password": { "type": "string", "format": "password" }
+        }
+      },
+      "AmountRequest": {
+        "type": "object",
+        "required": ["amount", "currency"],
+        "properties": {
+          "amount": { "type": "number", "format": "double", "minimum": 0, "example": 100.0 },
+          "currency": { "type": "string", "enum": ["USD", "RUB", "EUR"] }
+        }
+      },
+      "ExchangeRequest": {
+        "type": "object",
+        "required": ["from_currency", "to_currency", "amount"],
+        "properties": {
+          "from_currency": { "type": "string", "enum": ["USD", "RUB", "EUR"] },
+          "to_currency": { "type": "string", "enum": ["USD", "RUB", "EUR"] },
+          "amount": { "type": "number", "format": "double", "minimum": 0, "example": 100.0 }
+        }
+      },
+      "MessageResponse": {
+        "type": "object",
+        "properties": { "message": { "type": "string" } }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "properties": { "token": { "type": "string" } }
+      },
+      "Balance": {
+        "type": "object",
+        "properties": {
+          "USD": { "type": "number", "format": "double" },
+          "RUB": { "type": "number", "format": "double" },
+          "EUR": { "type": "number", "format": "double" }
+        }
+      },
+      "BalanceResponse": {
+        "type": "object",
+        "properties": { "balance": { "$ref": "#/components/schemas/Balance" } }
+      },
+      "ReplenishResponse": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "new_balance": { "$ref": "#/components/schemas/Balance" }
+        }
+      },
+      "RatesResponse": {
+        "type": "object",
+        "properties": {
+          "rates": {
+            "type": "object",
+            "properties": {
+              "USD": { "type": "number", "format": "double" },
+              "RUB": { "type": "number", "format": "double" },
+              "EUR": { "type": "number", "format": "double" }
+            }
+          }
+        }
+      },
+      "ExchangeResponse": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "exchanged_amount": { "type": "number", "format": "double" },
+          "new_balance": { "$ref": "#/components/schemas/Balance" }
+        }
+      }
+    }
+  }
+}
