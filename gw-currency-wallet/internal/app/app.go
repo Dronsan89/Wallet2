@@ -58,7 +58,7 @@ func (a *App) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create rates client: %w", err)
 	}
-	ratesCache := rates.NewCache(ratesClient, a.cfg.RatesCacheTTL)
+	ratesCache := rates.NewCache(ratesClient, a.cfg.RatesCacheTTL, a.log)
 
 	producer := kafka.New(a.cfg.KafkaBrokers, a.cfg.KafkaTopic, a.log)
 

@@ -1,0 +1,175 @@
+# Стек для локальной проверки всех сервисов:
+# PostgreSQL (wallet + exchanger), Kafka, MongoDB, ClickHouse,
+# сервис курсов, кошелёк, уведомления и аналитика.
+#
+#   docker compose up --build
+#
+#   кошелёк:        http://localhost:8080
+#   уведомления:    http://localhost:8082/health
+#   аналитика:      http://localhost:8083/api/v1/analytics/summary?period=5m
+#   курсы:          localhost:50051 (gRPC)
+#   mongodb:        localhost:27017
+#   clickhouse:     http://localhost:8123 (HTTP), localhost:9000 (native)
+#
+# Образы postgres/apache-kafka/mongo/clickhouse тянутся из интернета.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wallet-postgres
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+      POSTGRES_DB: wallet
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -d wallet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  kafka:
+    image: apache/kafka:3.7.1
+    container_name: wallet-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+
+  mongo:
+    image: mongo:7
+    container_name: wallet-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+      - ./deploy/mongo/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: wallet-clickhouse
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhousedata:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  exchanger:
+    build:
+      context: .
+      dockerfile: gw-exchanger/Dockerfile
+    container_name: wallet-exchanger
+    environment:
+      LOG_LEVEL: info
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: exchanger
+      DB_PASSWORD: exchanger
+      DB_NAME: exchanger
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/grpcprobe", "-addr", "localhost:50051", "-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  wallet:
+    build:
+      context: .
+      dockerfile: gw-currency-wallet/Dockerfile
+    container_name: wallet-app
+    environment:
+      LOG_LEVEL: info
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: wallet
+      DB_PASSWORD: wallet
+      DB_NAME: wallet
+      KAFKA_BROKERS: kafka:9092
+      EXCHANGER_GRPC_ADDR: exchanger:50051
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      exchanger:
+        condition: service_started
+
+  notification:
+    build:
+      context: .
+      dockerfile: gw-notification/Dockerfile
+    container_name: wallet-notification
+    environment:
+      LOG_LEVEL: info
+      KAFKA_BROKERS: kafka:9092
+      MONGO_URI: mongodb://mongo:27017
+    ports:
+      - "8082:8082"
+    depends_on:
+      kafka:
+        condition: service_started
+      mongo:
+        condition: service_healthy
+
+  analytics:
+    build:
+      context: .
+      dockerfile: gw-analytics/Dockerfile
+    container_name: wallet-analytics
+    environment:
+      LOG_LEVEL: info
+      KAFKA_BROKERS: kafka:9092
+      CLICKHOUSE_ADDR: clickhouse:9000
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    ports:
+      - "8083:8083"
+    depends_on:
+      kafka:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  mongodata:
+  clickhousedata:

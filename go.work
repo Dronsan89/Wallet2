@@ -2,5 +2,8 @@ go 1.25
 
 use (
 	./proto-exchange
+	./gw-exchanger
 	./gw-currency-wallet
+	./gw-notification
+	./gw-analytics
 )

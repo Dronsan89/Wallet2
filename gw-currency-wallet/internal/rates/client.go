@@ -16,7 +16,7 @@ import (
 // Rates — курсы валют: сколько рублей стоит одна единица валюты (RUB = 1).
 type Rates map[string]decimal.Decimal
 
-// Provider — источник курсов: gRPC-клиент, кэш или заглушка в тестах.
+// Provider — источник курсов: gRPC-клиент, кэш или тестовая реализация.
 type Provider interface {
 	Rates(ctx context.Context) (Rates, error)
 }
@@ -31,20 +31,26 @@ type Client struct {
 // NewClient создаёт клиента. Соединение устанавливается лениво, при первом запросе,
 // поэтому недоступность сервиса курсов не мешает запуску кошелька.
 func NewClient(addr string, timeout time.Duration) (*Client, error) {
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("create grpc client: %w", err)
+	}
+
+	return NewClientWithConn(conn, timeout), nil
+}
+
+// NewClientWithConn создаёт клиента поверх готового gRPC-соединения.
+// Используется в тестах (bufconn), чтобы проверить обмен по gRPC без сети.
+func NewClientWithConn(conn *grpc.ClientConn, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
 	}
 
 	return &Client{
 		conn:    conn,
 		api:     exchange.NewExchangeServiceClient(conn),
 		timeout: timeout,
-	}, nil
+	}
 }
 
 // Rates запрашивает курсы всех валют.

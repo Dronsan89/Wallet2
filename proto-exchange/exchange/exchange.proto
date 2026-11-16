@@ -4,7 +4,6 @@ package exchange;
 
 option go_package = "github.com/proto-exchange/exchange_grpc/exchange;exchange";
 
-// Определение сервиса
 service ExchangeService {
   // Получение курсов обмена всех валют
   rpc GetExchangeRates(Empty) returns (ExchangeRatesResponse);
