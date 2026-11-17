@@ -1,4 +1,4 @@
-# Сборка всех модулей репозитория.
+﻿# Сборка всех модулей репозитория.
 #  * сервис (есть каталог cmd/) -> linux/amd64 бинарь `main` (команда из ТЗ);
 #  * библиотечный модуль (proto-exchange) -> проверка компиляции.
 # Модули находятся автоматически: каталог верхнего уровня с go.mod.
@@ -15,25 +15,27 @@ $root = Split-Path -Parent $PSScriptRoot
 $targetOS = if ($Windows) { 'windows' } else { 'linux' }
 $failed = @()
 
-$modules = Get-ChildItem $root -Directory |
-    Where-Object { Test-Path (Join-Path $_.FullName 'go.mod') } |
-    Sort-Object Name
+# Модули ищем на глубину до двух уровней: сервисы в корне и tools/loadgen.
+$modules = Get-ChildItem $root -Recurse -Depth 2 -Filter 'go.mod' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -notmatch '\\\.(gocache|gomodcache|gotmp|git)\\' } |
+    ForEach-Object { $_.Directory } |
+    Sort-Object FullName -Unique
 
 foreach ($m in $modules) {
     Push-Location $m.FullName
     try {
         if (Test-Path (Join-Path $m.FullName 'cmd')) {
-            Write-Host "== $($m.Name) ($targetOS/amd64) =="
+            Write-Host "== $($m.FullName.Substring($root.Length + 1)) ($targetOS/amd64) =="
             $env:GOOS = $targetOS
             $env:GOARCH = 'amd64'
             $bin = if ($targetOS -eq 'windows') { 'main.exe' } else { 'main' }
             go build -trimpath -ldflags='-s -w' -o $bin ./cmd
         } else {
-            Write-Host "== $($m.Name) =="
+            Write-Host "== $($m.FullName.Substring($root.Length + 1)) =="
             go build ./...
         }
 
-        if ($LASTEXITCODE -ne 0) { $failed += $m.Name }
+        if ($LASTEXITCODE -ne 0) { $failed += $m.FullName.Substring($root.Length + 1) }
     } finally {
         $env:GOOS = 'windows'
         Pop-Location

@@ -38,7 +38,10 @@ func main() {
 }
 
 func run(addr, from, to string, healthCheck bool, timeout time.Duration) error {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDisableServiceConfig(),
+	)
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", addr, err)
 	}

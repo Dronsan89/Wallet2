@@ -15,6 +15,9 @@ const (
 	defaultKafkaCommitTimeout = 5 * time.Second
 	defaultKafkaMaxRetries    = 5
 	defaultKafkaRetryBackoff  = 200 * time.Millisecond
+	// defaultKafkaIdleReconnect — через сколько простоя пересоздаём reader:
+	// лечит зависшую сессию consumer group после падения брокера.
+	defaultKafkaIdleReconnect = 2 * time.Minute
 
 	defaultClickHouseAddr       = "localhost:9000"
 	defaultClickHouseDB         = "analytics"

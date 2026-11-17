@@ -65,9 +65,9 @@ func (c *Connector) Summary(ctx context.Context, from, to time.Time) (model.Summ
 		SELECT
 			count()                        AS total,
 			countIf(status = ?)            AS failed,
-			avg(latency_ms)                AS avg_latency,
-			quantile(0.95)(latency_ms)     AS p95_latency,
-			max(latency_ms)                AS max_latency
+			toFloat64(avg(latency_ms))    AS avg_latency,
+			toFloat64(quantile(0.95)(latency_ms)) AS p95_latency,
+			toFloat64(max(latency_ms))    AS max_latency
 		FROM %s FINAL
 		WHERE created_at >= ? AND created_at < ?`
 
@@ -158,7 +158,7 @@ func (c *Connector) TimeSeries(ctx context.Context, from, to time.Time, step tim
 			toStartOfInterval(created_at, toIntervalSecond(?)) AS bucket,
 			count()                AS total,
 			countIf(status = ?)    AS failed,
-			avg(latency_ms)        AS avg_latency
+			toFloat64(avg(latency_ms)) AS avg_latency
 		FROM %s FINAL
 		WHERE created_at >= ? AND created_at < ?
 		GROUP BY bucket

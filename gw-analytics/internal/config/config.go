@@ -25,6 +25,7 @@ type Config struct {
 	KafkaCommitTimeout time.Duration
 	KafkaMaxRetries    int
 	KafkaRetryBackoff  time.Duration
+	KafkaIdleReconnect time.Duration
 
 	ClickHouseAddr       string
 	ClickHouseDB         string
@@ -48,6 +49,7 @@ func New() *Config {
 		KafkaCommitTimeout: pkg.GetEnvDuration("KAFKA_COMMIT_TIMEOUT", defaultKafkaCommitTimeout),
 		KafkaMaxRetries:    pkg.GetEnvInt("KAFKA_MAX_RETRIES", defaultKafkaMaxRetries),
 		KafkaRetryBackoff:  pkg.GetEnvDuration("KAFKA_RETRY_BACKOFF", defaultKafkaRetryBackoff),
+		KafkaIdleReconnect: pkg.GetEnvDuration("KAFKA_IDLE_RECONNECT", defaultKafkaIdleReconnect),
 
 		ClickHouseAddr:       pkg.GetEnv("CLICKHOUSE_ADDR", defaultClickHouseAddr),
 		ClickHouseDB:         pkg.GetEnv("CLICKHOUSE_DB", defaultClickHouseDB),

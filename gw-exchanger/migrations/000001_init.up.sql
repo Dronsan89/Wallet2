@@ -13,4 +13,3 @@ INSERT INTO currency_rates (currency, rub_per_unit) VALUES
     ('EUR', 100.000000),
     ('RUB', 1.000000)
 ON CONFLICT (currency) DO NOTHING;
-ц

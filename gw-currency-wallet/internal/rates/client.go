@@ -30,8 +30,14 @@ type Client struct {
 
 // NewClient создаёт клиента. Соединение устанавливается лениво, при первом запросе,
 // поэтому недоступность сервиса курсов не мешает запуску кошелька.
+//
+// Service config отключён: мы используем только контракт из .proto, а лишний
+// DNS-запрос за конфигурацией сервиса увеличивает время первого вызова.
 func NewClient(addr string, timeout time.Duration) (*Client, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDisableServiceConfig(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create grpc client: %w", err)
 	}

@@ -105,6 +105,7 @@ FetchMessage → накопление батча → разбор → InsertMany
 | `KAFKA_COMMIT_TIMEOUT` | `5s` | таймаут commit и записи в DLQ |
 | `KAFKA_MAX_RETRIES` | `5` | попыток записи батча в Mongo |
 | `KAFKA_RETRY_BACKOFF` | `200ms` | начальная пауза между попытками (дальше ×2) |
+| `KAFKA_IDLE_RECONNECT` | `2m` | простой, после которого reader пересоздаётся (самовосстановление) |
 | `MONGO_URI` | `mongodb://localhost:27017` | подключение к MongoDB |
 | `MONGO_DB` | `notification` | база |
 | `MONGO_COLLECTION` | `transfers` | коллекция |

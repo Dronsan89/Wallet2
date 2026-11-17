@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -39,6 +40,9 @@ type Consumer struct {
 	dlq     DeadLetterSender
 	now     func() time.Time
 
+	readerMu  sync.Mutex
+	newReader func() (MessageReader, error)
+
 	stats  Stats
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -46,16 +50,7 @@ type Consumer struct {
 
 // New создаёт консьюмер с настоящими клиентами Kafka.
 func New(cfg *config.Config, storage storages.Storage, log *slog.Logger) *Consumer {
-	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:        cfg.KafkaBrokers,
-		GroupID:        cfg.KafkaGroup,
-		Topic:          cfg.KafkaTopic,
-		MinBytes:       1,
-		MaxBytes:       10 << 20,
-		MaxWait:        cfg.KafkaPollTimeout,
-		CommitInterval: 0, // коммитим вручную, только после записи в Mongo
-		StartOffset:    kafkago.FirstOffset,
-	})
+	reader := newKafkaReader(cfg)
 
 	dlq := &kafkago.Writer{
 		Addr:         kafkago.TCP(cfg.KafkaBrokers...),
@@ -65,7 +60,81 @@ func New(cfg *config.Config, storage storages.Storage, log *slog.Logger) *Consum
 		BatchTimeout: 10 * time.Millisecond,
 	}
 
-	return NewWithDeps(cfg, storage, log, reader, dlq)
+	c := NewWithDeps(cfg, storage, log, reader, dlq)
+	c.newReader = func() (MessageReader, error) { return newKafkaReader(cfg), nil }
+
+	return c
+}
+
+// newKafkaReader создаёт reader consumer group. Отдельная функция нужна,
+// чтобы пересоздать клиента, если сессия группы зависла после сбоя брокера.
+func newKafkaReader(cfg *config.Config) MessageReader {
+	return kafkago.NewReader(kafkago.ReaderConfig{
+		Brokers:        cfg.KafkaBrokers,
+		GroupID:        cfg.KafkaGroup,
+		Topic:          cfg.KafkaTopic,
+		MinBytes:       1,
+		MaxBytes:       10 << 20,
+		MaxWait:        cfg.KafkaPollTimeout,
+		CommitInterval: 0, // коммитим вручную, только после записи в Mongo
+		StartOffset:    kafkago.FirstOffset,
+	})
+}
+
+// currentReader возвращает текущий reader (подменяется при пересоздании).
+func (c *Consumer) currentReader() MessageReader {
+	c.readerMu.Lock()
+	defer c.readerMu.Unlock()
+
+	return c.reader
+}
+
+// swapReader подменяет reader и закрывает предыдущий.
+func (c *Consumer) swapReader(reader MessageReader) {
+	c.readerMu.Lock()
+	old := c.reader
+	c.reader = reader
+	c.readerMu.Unlock()
+
+	if old != nil {
+		if err := old.Close(); err != nil {
+			c.log.Error("close stale kafka reader", "error", err)
+		}
+	}
+}
+
+// reconnectIfStalled пересоздаёт reader, если сообщений нет дольше
+// KAFKA_IDLE_RECONNECT: так консьюмер сам лечится после сбоя брокера.
+func (c *Consumer) reconnectIfStalled(lastMessage *time.Time, limit *time.Duration) {
+	if c.cfg.KafkaIdleReconnect <= 0 || c.newReader == nil {
+		return
+	}
+	if time.Since(*lastMessage) < *limit {
+		return
+	}
+
+	c.log.Warn("kafka reader idle too long, reconnecting",
+		"idle", time.Since(*lastMessage).Round(time.Second).String(),
+		"limit", limit.String(),
+	)
+
+	reader, err := c.newReader()
+	if err != nil {
+		c.log.Error("recreate kafka reader", "error", err)
+		*lastMessage = time.Now()
+
+		return
+	}
+
+	c.swapReader(reader)
+	*lastMessage = time.Now()
+	// Если поток просто редкий, не пересоздаём reader каждые N минут:
+	// пауза удваивается до 30 минут и сбрасывается при первом сообщении.
+	if next := *limit * 2; next <= 30*time.Minute {
+		*limit = next
+	}
+
+	c.log.Info("kafka reader recreated", "next_check", limit.String())
 }
 
 // NewWithDeps создаёт консьюмер с переданными зависимостями (используется в тестах).
@@ -122,8 +191,10 @@ func (c *Consumer) Stop(ctx context.Context) error {
 		}
 	}
 
-	if err := c.reader.Close(); err != nil {
-		c.log.Error("close kafka reader", "error", err)
+	if reader := c.currentReader(); reader != nil {
+		if err := reader.Close(); err != nil {
+			c.log.Error("close kafka reader", "error", err)
+		}
 	}
 	if err := c.dlq.Close(); err != nil {
 		c.log.Error("close dlq writer", "error", err)
@@ -142,6 +213,8 @@ func (c *Consumer) run(ctx context.Context) {
 	defer close(c.done)
 
 	batch := make([]kafkago.Message, 0, c.cfg.KafkaBatchSize)
+	lastMessage := time.Now()
+	stallLimit := c.cfg.KafkaIdleReconnect
 
 	for {
 		msg, err := c.fetch(ctx)
@@ -149,6 +222,8 @@ func (c *Consumer) run(ctx context.Context) {
 		switch {
 		case err == nil:
 			c.stats.Received.Add(1)
+			lastMessage = time.Now()
+			stallLimit = c.cfg.KafkaIdleReconnect // пришло сообщение — сбрасываем паузу
 			batch = append(batch, msg)
 			if len(batch) >= c.cfg.KafkaBatchSize {
 				c.flush(ctx, &batch)
@@ -157,6 +232,7 @@ func (c *Consumer) run(ctx context.Context) {
 		case errors.Is(err, context.DeadlineExceeded):
 			// Новых сообщений нет — сбрасываем накопленное, чтобы не ждать вечно.
 			c.flush(ctx, &batch)
+			c.reconnectIfStalled(&lastMessage, &stallLimit)
 
 		default:
 			if ctx.Err() != nil {
@@ -177,7 +253,7 @@ func (c *Consumer) fetch(ctx context.Context) (kafkago.Message, error) {
 	pollCtx, cancel := context.WithTimeout(ctx, c.cfg.KafkaPollTimeout)
 	defer cancel()
 
-	return c.reader.FetchMessage(pollCtx)
+	return c.currentReader().FetchMessage(pollCtx)
 }
 
 // flush разбирает батч, пишет события в хранилище и коммитит сообщения.
@@ -320,7 +396,7 @@ func (c *Consumer) commit(ctx context.Context, msgs []kafkago.Message) error {
 	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.cfg.KafkaCommitTimeout)
 	defer cancel()
 
-	if err := c.reader.CommitMessages(commitCtx, msgs...); err != nil {
+	if err := c.currentReader().CommitMessages(commitCtx, msgs...); err != nil {
 		return err
 	}
 

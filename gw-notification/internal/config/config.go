@@ -26,6 +26,7 @@ type Config struct {
 	KafkaCommitTimeout time.Duration
 	KafkaMaxRetries    int
 	KafkaRetryBackoff  time.Duration
+	KafkaIdleReconnect time.Duration
 
 	MongoURI            string
 	MongoDB             string
@@ -48,6 +49,7 @@ func New() *Config {
 		KafkaCommitTimeout: pkg.GetEnvDuration("KAFKA_COMMIT_TIMEOUT", defaultKafkaCommitTimeout),
 		KafkaMaxRetries:    pkg.GetEnvInt("KAFKA_MAX_RETRIES", defaultKafkaMaxRetries),
 		KafkaRetryBackoff:  pkg.GetEnvDuration("KAFKA_RETRY_BACKOFF", defaultKafkaRetryBackoff),
+		KafkaIdleReconnect: pkg.GetEnvDuration("KAFKA_IDLE_RECONNECT", defaultKafkaIdleReconnect),
 
 		MongoURI:            pkg.GetEnv("MONGO_URI", defaultMongoURI),
 		MongoDB:             pkg.GetEnv("MONGO_DB", defaultMongoDB),

@@ -6,4 +6,5 @@ use (
 	./gw-currency-wallet
 	./gw-notification
 	./gw-analytics
+	./tools/loadgen
 )

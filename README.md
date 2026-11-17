@@ -49,6 +49,9 @@ docker compose up --build
 ```
 
 Поднимаются PostgreSQL (две базы), Kafka (KRaft), MongoDB, ClickHouse и четыре сервиса.
+Первый запуск собирает образы сервисов; одноразовый `kafka-init` создаёт топики
+`wallet.transactions` (3 партиции) и `wallet.transactions.dlq`, после чего сервисы
+стартуют только при готовых зависимостях (healthcheck'и).
 
 | Что | Адрес |
 |---|---|
@@ -57,6 +60,7 @@ docker compose up --build
 | Аналитика | http://localhost:8083/api/v1/analytics/summary?period=5m |
 | gRPC курсов | `localhost:50051` |
 | PostgreSQL / Kafka / MongoDB / ClickHouse | `5432` / `9092` / `27017` / `8123`, `9000` |
+| Kafka для инструментов с хоста | `localhost:19092` (внешний слушатель) |
 
 Проверка сценария:
 
@@ -82,6 +86,69 @@ curl -s "localhost:8083/api/v1/analytics/summary?period=5m"
 Остановка: `docker compose down` (данные сохраняются в томах) или `down -v`
 (удалить тома).
 
+## Проверка стека
+
+Сквозной сценарий одной командой — регистрация, логин, пополнение, вывод, курсы,
+обмен, негативные коды (401/400), доставка события о крупной операции в MongoDB и
+ClickHouse, проверка агрегаций:
+
+```powershell
+make smoke
+# или
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke.ps1
+```
+
+Ожидаемый результат — `SMOKE OK` и код возврата 0. Скрипт принимает адреса сервисов
+(`-WalletUrl`, `-NotificationUrl`, `-AnalyticsUrl`, `-ClickHouseUrl`) и флаг
+`-SkipStorageChecks`, если проверки Mongo/ClickHouse выполняются отдельно.
+
+## Нагрузочная проверка
+
+Проверяются два требования ТЗ: консьюмеры держат **не менее 1000 сообщений/с** и
+**p95 HTTP-ручки кошелька не выше 200 мс**. Инструмент лежит в репозитории
+(`tools/loadgen`), поэтому проверку можно повторить на любом окружении:
+
+```powershell
+make loadtest
+# или
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\loadtest.ps1
+```
+
+По умолчанию: 50 000 событий в Kafka и 2 000 HTTP-запросов в 50 потоков.
+Параметры задаются флагами:
+
+```powershell
+# burst: максимальная скорость отправки
+.\scripts\loadtest.ps1 -Events 100000 -HttpRequests 5000 -HttpConcurrency 100
+
+# sustained: ровно 1000 msg/s в течение 30 секунд, только Kafka
+.\scripts\loadtest.ps1 -Events 30000 -Rate 1000 -SkipKafka:$false -SkipHttp
+
+# только HTTP, с другими порогами
+.\scripts\loadtest.ps1 -SkipKafka -TargetP95Ms 150 -HttpRequests 5000
+```
+
+Что делает скрипт:
+
+1. отправляет события в `wallet.transactions` через внешний слушатель Kafka
+   (`localhost:19092`) и замеряет скорость отправки;
+2. ждёт, пока аналитика обработает все события, и считает полный цикл;
+3. проверяет `lag = 0` у consumer group `gw-analytics`;
+4. регистрирует пользователя, пополняет баланс и нагружает `GET /api/v1/balance`,
+   считая p50/p95/p99;
+5. печатает `LOADTEST OK` и возвращает 0, если пороги выдержаны.
+
+Ориентир на локальной машине (Docker Desktop, один хост):
+
+```
+kafka: produced=50000 elapsed=0.389s rps=128523 target_rate=0
+отправка: 0,389 c; дообработка остатка: 0,25 c; полный цикл: 0,640 c => 78100 msg/s
+http: requests=2000 rps=16522 errors=0 p50=2ms p95=6ms p99=10ms max=15ms
+```
+
+Сервисы внутри compose-сети ходят в Kafka по внутреннему адресу `kafka:9092`,
+внешний слушатель `19092` нужен только инструментам с хоста.
+
 ## Локальная сборка и тесты
 
 Требования: Go 1.25+, `protoc` с плагинами `protoc-gen-go` и `protoc-gen-go-grpc`
@@ -92,6 +159,8 @@ make build     # linux/amd64 бинари всех сервисов + прове
 make test      # go test ./... во всех модулях
 make vet       # go vet ./... во всех модулях
 make proto     # перегенерация proto-exchange/exchange/*.pb.go
+make smoke     # сквозная проверка стека
+make loadtest  # нагрузочная проверка (Kafka + HTTP)
 ```
 
 На Windows те же действия выполняют скрипты:
@@ -150,6 +219,7 @@ cd gw-currency-wallet && ./main -c config.env
 | `RATES_CACHE_TTL`, `EXCHANGER_GRPC_ADDR` | wallet | `5s`, `localhost:50051` |
 | `BIG_TRANSFER_THRESHOLD` | wallet | `30000` (рубли) |
 | `KAFKA_BROKERS`, `KAFKA_TOPIC`, `KAFKA_GROUP` | wallet / notification / analytics | `localhost:9092`, `wallet.transactions` |
+| `KAFKA_IDLE_RECONNECT` | notification / analytics | `2m` (пересоздание reader при простое) |
 | `MONGO_URI`, `MONGO_DB`, `MONGO_COLLECTION` | notification | `mongodb://localhost:27017`, `notification`, `transfers` |
 | `CLICKHOUSE_ADDR`, `CLICKHOUSE_DB` | analytics | `localhost:9000`, `analytics` |
 
@@ -161,7 +231,15 @@ cd gw-currency-wallet && ./main -c config.env
 - **Миграции** применяются при старте сервисов: SQL-файлы для PostgreSQL,
   DDL для ClickHouse, индексы для MongoDB. Повторный запуск безопасен.
 - **Kafka — at-least-once.** Идемпотентность приёмников: уникальный индекс
-  `transaction_id` в MongoDB и `ReplacingMergeTree` + `FINAL` в ClickHouse.
+  `transaction_id` в MongoDB и `ReplacingMergeTree` + `FINAL` в ClickHouse, поэтому
+  повторная доставка не задваивает данные (видно в счётчиках `duplicates`).
+- **Топик на 3 партиции** создаётся при старте стека: консьюмеры масштабируются
+  репликами в одной consumer group, до трёх полезных реплик на сервис.
+- **Самовосстановление консьюмеров.** Если сессия consumer group зависла (сбой
+  брокера, потерянная назначенная партиция), reader пересоздаётся после простоя
+  `KAFKA_IDLE_RECONNECT` (по умолчанию 2 минуты, пауза удваивается до 30 минут).
+- **Данные Kafka и offset'ы групп** хранятся в томе `kafkadata`, поэтому
+  перезапуск контейнера брокера не теряет топики и прогресс чтения.
 - **Ретраи и DLQ.** `gw-notification` повторяет запись в Mongo с экспоненциальной
   паузой, после чего отправляет сообщения в `wallet.transactions.dlq`.
   `gw-analytics` после ретраев дропает батч, чтобы не блокировать партицию;
@@ -220,17 +298,18 @@ TEST_CLICKHOUSE_ADDR='localhost:9000' \
 Wallet2/
 ├── go.work                    # рабочее пространство Go-модулей
 ├── Makefile                   # proto / build / test / vet / up / down
-├── docker-compose.yml         # весь стек: 4 базы/брокера + 4 сервиса
+├── docker-compose.yml         # весь стек: брокеры, базы, kafka-init и 4 сервиса
 ├── deploy/
 │   ├── postgres/init/         # вторая база (exchanger) при первом старте
 │   └── mongo/init/            # индексы коллекции transfers
-├── scripts/                   # dev-env.ps1, build.ps1, test.ps1, vet.ps1
+├── scripts/                   # dev-env, build, test, vet, smoke, loadtest
 ├── proto-exchange/            # модуль github.com/proto-exchange/exchange_grpc
 │   └── exchange/              # exchange.proto + сгенерированные стабы
 ├── gw-exchanger/              # gRPC-сервис курсов
 ├── gw-currency-wallet/        # REST API кошелька
 ├── gw-notification/           # Kafka → MongoDB: история крупных переводов
-└── gw-analytics/              # Kafka → ClickHouse: метрики и агрегации
+├── gw-analytics/              # Kafka → ClickHouse: метрики и агрегации
+└── tools/loadgen/             # генератор нагрузки (Kafka + HTTP), модуль Go
 ```
 
 Каждый сервис — отдельный Go-модуль с `go.mod`, `Makefile`, `config.env`,

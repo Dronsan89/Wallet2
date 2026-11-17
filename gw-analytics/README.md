@@ -146,6 +146,7 @@ FetchMessage → батч до 1000 или 500 мс → decode/validate → Inse
 | `KAFKA_COMMIT_TIMEOUT` | `5s` | таймаут commit |
 | `KAFKA_MAX_RETRIES` | `5` | попыток записи в ClickHouse |
 | `KAFKA_RETRY_BACKOFF` | `200ms` | начальная пауза, дальше ×2 |
+| `KAFKA_IDLE_RECONNECT` | `2m` | простой, после которого reader пересоздаётся (самовосстановление) |
 | `CLICKHOUSE_ADDR` | `localhost:9000` | native-протокол |
 | `CLICKHOUSE_DB` | `analytics` | база (создаётся при старте) |
 | `CLICKHOUSE_USER` | `default` | пользователь |

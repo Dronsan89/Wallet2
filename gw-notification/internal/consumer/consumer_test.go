@@ -79,6 +79,13 @@ func (r *fakeReader) Close() error {
 	return nil
 }
 
+func (r *fakeReader) isClosed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.closed
+}
+
 func (r *fakeReader) committedCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -167,17 +174,17 @@ func eventMessage(t *testing.T, event model.Event) kafkago.Message {
 
 func successEvent(transactionID string) model.Event {
 	return model.Event{
-		EventID:        transactionID,
-		TransactionID:  transactionID,
-		UserID:         "user-1",
-		Operation:      "DEPOSIT",
-		Status:         model.StatusSuccess,
-		FromCurrency:   "USD",
-		Amount:         1000,
-		RubEquivalent:  90000,
-		CreatedAt:      time.Now().UTC(),
-		Source:         "gw-currency-wallet",
-		SchemaVersion:  1,
+		EventID:       transactionID,
+		TransactionID: transactionID,
+		UserID:        "user-1",
+		Operation:     "DEPOSIT",
+		Status:        model.StatusSuccess,
+		FromCurrency:  "USD",
+		Amount:        1000,
+		RubEquivalent: 90000,
+		CreatedAt:     time.Now().UTC(),
+		Source:        "gw-currency-wallet",
+		SchemaVersion: 1,
 	}
 }
 
@@ -337,7 +344,7 @@ func TestDuplicatesCounted(t *testing.T) {
 
 func TestStopFlushesPendingBatch(t *testing.T) {
 	cfg := testConfig()
-	cfg.KafkaBatchSize = 100              // батч не наберётся по размеру
+	cfg.KafkaBatchSize = 100                      // батч не наберётся по размеру
 	cfg.KafkaPollTimeout = 500 * time.Millisecond // и по таймауту тоже не успеет
 
 	reader := &fakeReader{queue: []kafkago.Message{
@@ -363,5 +370,32 @@ func TestStopFlushesPendingBatch(t *testing.T) {
 	}
 	if got := reader.committedCount(); got != 2 {
 		t.Fatalf("после остановки закоммичено %d, want 2", got)
+	}
+}
+
+// TestStalledReaderIsRecreated проверяет самовосстановление: если reader
+// перестал отдавать сообщения (зависшая сессия группы после сбоя брокера),
+// консьюмер пересоздаёт его и продолжает читать с коммитнутых offset'ов.
+func TestStalledReaderIsRecreated(t *testing.T) {
+	cfg := testConfig()
+	cfg.KafkaIdleReconnect = 30 * time.Millisecond
+
+	stalled := &fakeReader{} // очередь пуста: всегда DeadlineExceeded
+	replacement := &fakeReader{queue: []kafkago.Message{eventMessage(t, successEvent("tx-reconnect"))}}
+	storage := &fakeStorage{}
+
+	c := NewWithDeps(cfg, storage, testLogger(), stalled, &fakeDLQ{})
+	c.newReader = func() (MessageReader, error) { return replacement, nil }
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+	waitFor(t, func() bool { return storage.count() >= 1 })
+	waitFor(t, func() bool { return stalled.isClosed() })
+
+	if got := c.Stats().Stored; got < 1 {
+		t.Fatalf("после пересоздания reader событие не сохранено: stored=%d", got)
 	}
 }

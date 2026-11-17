@@ -9,7 +9,7 @@ POWERSHELL := powershell -NoProfile -ExecutionPolicy Bypass -File
 PROTO_DIR := proto-exchange/exchange
 PROTO_CMD  := protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative --experimental_allow_proto3_optional exchange.proto
 
-.PHONY: all proto build test vet up down
+.PHONY: all proto build test vet up down smoke loadtest
 
 all: proto build test
 
@@ -30,3 +30,9 @@ up:
 
 down:
 	docker compose down
+
+smoke:
+	$(POWERSHELL) scripts/smoke.ps1
+
+loadtest:
+	$(POWERSHELL) scripts/loadtest.ps1
